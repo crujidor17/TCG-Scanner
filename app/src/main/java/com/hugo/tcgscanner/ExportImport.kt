@@ -31,12 +31,16 @@ private fun priceText(p: PriceInfo?): String {
 /**
  * Una carta por línea.
  *  - Solo cartas:     "Nombre (Versión) 3 copias"
- *  - Cartas y precio: "Nombre (Versión) 3 copias 12,50€"  (precio por unidad, el actual)
+ *  - Cartas y precio: "Nombre (Versión) 3 copias 12,50€" (precio total de todas las copias)
  */
 fun buildExportText(cards: List<CollectionCard>, withPrice: Boolean): String =
     cards.joinToString(separator = "\n", postfix = "\n") { c ->
         val base = "${c.blueprint.displayName} ${c.qty} copias"
-        if (withPrice) base + " " + priceText(c.currentPrice ?: c.scanPrice) else base
+        if (withPrice) {
+            val unitPrice = c.currentPrice ?: c.scanPrice
+            val totalPrice = unitPrice?.let { it.copy(cents = it.cents * c.qty) }
+            base + " " + priceText(totalPrice)
+        } else base
     }
 
 // "<nombre> <número> copia(s)" y, opcionalmente, cualquier cosa detrás (p. ej. el precio).
