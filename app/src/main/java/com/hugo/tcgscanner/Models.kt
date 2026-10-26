@@ -75,6 +75,28 @@ fun collectionCardFrom(o: JSONObject): CollectionCard = CollectionCard(
     updatedDate = if (o.isNull("updatedDate")) null else o.optLong("updatedDate")
 )
 
+/** Suma unidades a una entrada existente y se queda con el precio actual más reciente. */
+fun CollectionCard.absorb(extraQty: Int, price: PriceInfo?, date: Long?): CollectionCard {
+    val newer = price != null && (date ?: 0L) >= (updatedDate ?: 0L)
+    return copy(
+        qty = (qty + extraQty).coerceAtMost(MAX_QTY),
+        currentPrice = if (newer) price else currentPrice,
+        updatedDate = if (newer) date else updatedDate
+    )
+}
+
+/** Une entradas repetidas de la misma carta (mismo blueprint) sumando sus cantidades. */
+fun mergeDuplicates(cards: List<CollectionCard>): List<CollectionCard> {
+    val byBlueprint = LinkedHashMap<Int, CollectionCard>()
+    for (c in cards) {
+        val prev = byBlueprint[c.blueprint.id]
+        byBlueprint[c.blueprint.id] = prev?.absorb(c.qty, c.currentPrice, c.updatedDate) ?: c
+    }
+    return byBlueprint.values.toList()
+}
+
+const val MAX_QTY = 9999
+
 fun fmt(p: PriceInfo?): String =
     if (p == null) "—" else String.format(Locale.getDefault(), "%.2f %s", p.cents / 100.0, p.currency)
 

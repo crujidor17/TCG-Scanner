@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -48,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -265,6 +267,7 @@ fun CollectionScreen(vm: AppViewModel, back: () -> Unit) {
     val busy by vm.busy.collectAsState()
     val message by vm.message.collectAsState()
     var toDelete by remember { mutableStateOf<CollectionCard?>(null) }
+    var editing by remember { mutableStateOf<CollectionCard?>(null) }
     val dateFmt = remember { DateFormat.getDateInstance(DateFormat.SHORT) }
 
     Column(Modifier.fillMaxSize().padding(12.dp)) {
@@ -284,15 +287,57 @@ fun CollectionScreen(vm: AppViewModel, back: () -> Unit) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     CardImage(c.blueprint.imageUrl)
                     Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
-                        Text("${c.blueprint.displayName} x${c.qty}", style = MaterialTheme.typography.titleSmall)
+                        Text(c.blueprint.displayName, style = MaterialTheme.typography.titleSmall)
                         Text("${c.blueprint.expansion} ${c.blueprint.number}")
                         Text("Escaneada ${dateFmt.format(Date(c.scanDate))}: ${fmt(c.scanPrice)}")
                         Text("Ahora: ${fmt(c.currentPrice)}" + (c.updatedDate?.let { " (${dateFmt.format(Date(it))})" } ?: ""))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Con 1 unidad, "−" pide confirmación para quitar la carta.
+                            TextButton(onClick = {
+                                if (c.qty <= 1) toDelete = c else vm.changeCollectionQty(c.uid, -1)
+                            }) { Text("−") }
+                            // Tocar la cantidad permite escribir el número exacto (varias a la vez).
+                            OutlinedButton(onClick = { editing = c }) { Text("x${c.qty}") }
+                            TextButton(onClick = { vm.changeCollectionQty(c.uid, 1) }) { Text("+") }
+                            Spacer(Modifier.weight(1f))
+                            TextButton(onClick = { toDelete = c }) { Text("Quitar") }
+                        }
                     }
-                    TextButton(onClick = { toDelete = c }) { Text("Quitar") }
                 }
             }
         }
+    }
+
+    editing?.let { c ->
+        var text by remember(c.uid) { mutableStateOf(c.qty.toString()) }
+        val newQty = text.toIntOrNull()
+        AlertDialog(
+            onDismissRequest = { editing = null },
+            title = { Text(c.blueprint.displayName) },
+            text = {
+                Column {
+                    Text("Cantidad total que tienes de esta carta:")
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = { v -> text = v.filter { ch -> ch.isDigit() }.take(4) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    if (newQty == 0) Text("Con 0 se quitará de la colección.", Modifier.padding(top = 8.dp))
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = newQty != null,
+                    onClick = {
+                        if (newQty == 0) toDelete = c else if (newQty != null) vm.setCollectionQty(c.uid, newQty)
+                        editing = null
+                    }
+                ) { Text("Guardar") }
+            },
+            dismissButton = { TextButton(onClick = { editing = null }) { Text("Cancelar") } }
+        )
     }
 
     toDelete?.let { c ->

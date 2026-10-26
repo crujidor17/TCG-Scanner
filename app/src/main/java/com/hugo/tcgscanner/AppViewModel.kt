@@ -21,7 +21,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _cart = MutableStateFlow<List<CartItem>>(emptyList())
     val cart: StateFlow<List<CartItem>> = _cart
 
-    private val _collection = MutableStateFlow(store.loadCollection())
+    // Al cargar, une entradas repetidas que pudieran existir de versiones anteriores.
+    private val _collection = MutableStateFlow(store.loadCollection().let { raw ->
+        mergeDuplicates(raw).also { if (it.size != raw.size) store.saveCollection(it) }
+    })
     val collection: StateFlow<List<CollectionCard>> = _collection
 
     private val _message = MutableStateFlow("")
@@ -148,14 +151,49 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val items = _cart.value
         if (items.isEmpty()) return
         val now = System.currentTimeMillis()
-        val added = items.map {
-            CollectionCard(UUID.randomUUID().toString(), it.blueprint, it.qty, it.price, now, it.price, now)
+        val updated = _collection.value.toMutableList()
+        var created = 0
+        var merged = 0
+        for (item in items) {
+            val idx = updated.indexOfFirst { it.blueprint.id == item.blueprint.id }
+            if (idx >= 0) {
+                // Ya la tenías: se suman unidades en la misma entrada (conserva el precio del primer escaneo).
+                updated[idx] = updated[idx].absorb(item.qty, item.price, now)
+                merged++
+            } else {
+                updated.add(
+                    CollectionCard(UUID.randomUUID().toString(), item.blueprint, item.qty, item.price, now, item.price, now)
+                )
+                created++
+            }
         }
-        val updated = _collection.value + added
         _collection.value = updated
         store.saveCollection(updated)
         clearCart()
-        _message.value = "${added.size} cartas añadidas a la colección"
+        _message.value = when {
+            merged == 0 -> "$created cartas añadidas a la colección"
+            created == 0 -> "$merged cartas ya estaban: cantidad sumada"
+            else -> "$created nuevas y $merged ya existentes (cantidad sumada)"
+        }
+    }
+
+    /** Suma o resta unidades a una carta de la colección (mínimo 1; para quitarla usa removeFromCollection). */
+    fun changeCollectionQty(uid: String, delta: Int) {
+        val updated = _collection.value.map {
+            if (it.uid == uid) it.copy(qty = (it.qty + delta).coerceIn(1, MAX_QTY)) else it
+        }
+        _collection.value = updated
+        store.saveCollection(updated)
+    }
+
+    /** Fija la cantidad exacta de una carta de la colección. */
+    fun setCollectionQty(uid: String, qty: Int) {
+        if (qty < 1) return
+        val updated = _collection.value.map {
+            if (it.uid == uid) it.copy(qty = qty.coerceAtMost(MAX_QTY)) else it
+        }
+        _collection.value = updated
+        store.saveCollection(updated)
     }
 
     fun removeFromCollection(uid: String) {
