@@ -14,6 +14,12 @@ class Store(private val ctx: Context) {
             prefs.edit().putString("token", v.trim()).apply()
         }
 
+    var translateOn: Boolean
+        get() = prefs.getBoolean("translate", true)
+        set(v) {
+            prefs.edit().putBoolean("translate", v).apply()
+        }
+
     private fun readArray(name: String): JSONArray {
         val f = File(ctx.filesDir, name)
         if (!f.exists()) return JSONArray()

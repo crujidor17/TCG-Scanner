@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
@@ -34,6 +36,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -113,7 +116,7 @@ fun ScanScreen(vm: AppViewModel, goCart: () -> Unit, goCollection: () -> Unit, g
 
     Box(Modifier.fillMaxSize()) {
         if (hasPermission) {
-            CameraView(onText = { vm.onFrameText(it) })
+            CameraView(onText = { t, s -> vm.onFrameText(t, s) }, fallbackEnabled = { vm.fallbackEnabled() })
         } else {
             Text("Se necesita permiso de cámara para escanear", Modifier.align(Alignment.Center).padding(24.dp))
         }
@@ -181,15 +184,16 @@ fun SearchDialog(vm: AppViewModel, onClose: () -> Unit) {
 }
 
 @Composable
-fun CameraView(onText: (String) -> Unit) {
+fun CameraView(onText: (String, OcrScript) -> Boolean, fallbackEnabled: () -> Boolean) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentOnText by rememberUpdatedState(onText)
+    val currentFallback by rememberUpdatedState(fallbackEnabled)
     val previewView = remember { PreviewView(context) }
 
     DisposableEffect(lifecycleOwner) {
         val executor = Executors.newSingleThreadExecutor()
-        val analyzer = OcrAnalyzer(executor) { currentOnText(it) }
+        val analyzer = OcrAnalyzer(executor, { currentFallback() }) { t, s -> currentOnText(t, s) }
         val future = ProcessCameraProvider.getInstance(context)
         var provider: ProcessCameraProvider? = null
         future.addListener({
@@ -268,6 +272,16 @@ fun CollectionScreen(vm: AppViewModel, back: () -> Unit) {
     val message by vm.message.collectAsState()
     var toDelete by remember { mutableStateOf<CollectionCard?>(null) }
     var editing by remember { mutableStateOf<CollectionCard?>(null) }
+    var showExport by remember { mutableStateOf(false) }
+    var showImportInfo by remember { mutableStateOf(false) }
+    var exportWithPrice by remember { mutableStateOf(false) }
+    val report by vm.importReport.collectAsState()
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) vm.exportTo(uri, exportWithPrice)
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.importFrom(uri)
+    }
     val dateFmt = remember { DateFormat.getDateInstance(DateFormat.SHORT) }
 
     Column(Modifier.fillMaxSize().padding(12.dp)) {
@@ -280,6 +294,18 @@ fun CollectionScreen(vm: AppViewModel, back: () -> Unit) {
         Text("Valor actual: ${fmt(totalCollection(cards, current = true))}")
         Button(onClick = { vm.refreshPrices() }, enabled = !busy && cards.isNotEmpty(), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
             Text(if (busy) "Actualizando…" else "Actualizar precios")
+        }
+        Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = { showExport = true },
+                enabled = !busy && cards.isNotEmpty(),
+                modifier = Modifier.weight(1f)
+            ) { Text("Exportar") }
+            OutlinedButton(
+                onClick = { showImportInfo = true },
+                enabled = !busy,
+                modifier = Modifier.weight(1f)
+            ) { Text("Importar") }
         }
         if (message.isNotBlank()) Text(message, Modifier.padding(bottom = 4.dp))
         LazyColumn(Modifier.weight(1f)) {
@@ -306,6 +332,80 @@ fun CollectionScreen(vm: AppViewModel, back: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (showExport) {
+        AlertDialog(
+            onDismissRequest = { showExport = false },
+            title = { Text("Exportar colección") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Se guarda en un archivo .txt, una carta por línea.")
+                    Button(
+                        onClick = {
+                            exportWithPrice = false
+                            showExport = false
+                            exportLauncher.launch(exportFileName(false))
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("1. Solo cartas") }
+                    Button(
+                        onClick = {
+                            exportWithPrice = true
+                            showExport = false
+                            exportLauncher.launch(exportFileName(true))
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("2. Cartas y precio") }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { showExport = false }) { Text("Cancelar") } }
+        )
+    }
+
+    if (showImportInfo) {
+        AlertDialog(
+            onDismissRequest = { showImportInfo = false },
+            title = { Text("Importar colección") },
+            text = {
+                Text(
+                    "Elige un archivo .txt con una carta por línea, en el formato de «Solo cartas»:\n\n" +
+                        "Nombre de la carta 2 copias\nOtra carta (Versión) 1 copias\n\n" +
+                        "Se consulta el precio de cada carta antes de añadirla (1 por segundo, puede tardar) " +
+                        "y las copias se suman a las que ya tengas."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showImportInfo = false
+                    importLauncher.launch(arrayOf("*/*"))
+                }) { Text("Elegir archivo") }
+            },
+            dismissButton = { TextButton(onClick = { showImportInfo = false }) { Text("Cancelar") } }
+        )
+    }
+
+    report?.let { r ->
+        AlertDialog(
+            onDismissRequest = { vm.dismissImportReport() },
+            title = { Text("Importación terminada") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text("${r.cards} cartas (${r.copies} copias) añadidas a la colección.")
+                    if (r.noPrice > 0) Text("Sin precio: ${r.noPrice}", Modifier.padding(top = 4.dp))
+                    if (r.ambiguous > 0) {
+                        Text("Con varias ediciones posibles (se eligió la primera): ${r.ambiguous}", Modifier.padding(top = 4.dp))
+                    }
+                    if (r.notFound.isNotEmpty()) {
+                        Text("No encontradas (${r.notFound.size}):", Modifier.padding(top = 8.dp))
+                        r.notFound.take(15).forEach { Text("• $it") }
+                        if (r.notFound.size > 15) Text("… y ${r.notFound.size - 15} más")
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { vm.dismissImportReport() }) { Text("Cerrar") } }
+        )
     }
 
     editing?.let { c ->
@@ -359,6 +459,7 @@ fun SettingsScreen(vm: AppViewModel, back: () -> Unit) {
     val catalog by vm.catalog.collectAsState()
     val busy by vm.busy.collectAsState()
     val message by vm.message.collectAsState()
+    val translateOn by vm.translateOn.collectAsState()
     var tokenText by remember { mutableStateOf(savedToken) }
 
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -376,6 +477,11 @@ fun SettingsScreen(vm: AppViewModel, back: () -> Unit) {
         Button(onClick = { vm.downloadCatalog() }, enabled = !busy && savedToken.isNotBlank()) {
             Text(if (busy) "Descargando…" else "Descargar / actualizar catálogo")
         }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Traducir cartas en francés, chino y coreano", Modifier.weight(1f))
+            Switch(checked = translateOn, onCheckedChange = { vm.setTranslateOn(it) })
+        }
+        Text("La primera vez descarga el modelo de cada idioma (unos 30 MB).")
         if (message.isNotBlank()) Text(message)
     }
 }

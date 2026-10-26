@@ -26,7 +26,27 @@ private fun similarity(a: String, b: String): Double {
     return if (m == 0) 0.0 else 1.0 - levenshtein(a, b).toDouble() / m
 }
 
+private val DIGITS_RE = Regex("\\d+")
+private val PRINTED_RE = Regex("(\\d{1,3})\\s*/\\s*(\\d{1,3})")
+
+private fun numeratorOf(number: String): Int = DIGITS_RE.find(number)?.value?.toIntOrNull() ?: -1
+
+private fun denominatorOf(number: String): Int =
+    DIGITS_RE.find(number.substringAfter('/', ""))?.value?.toIntOrNull() ?: -1
+
+private fun prefixOf(number: String): String =
+    Regex("^[A-Za-z]{2,5}").find(number.trim())?.value?.lowercase() ?: ""
+
+private fun pick(list: List<Blueprint>): Blueprint = list.firstOrNull { it.version.isBlank() } ?: list[0]
+
 class CardIndex(catalog: List<Blueprint>) {
+    data class LabelMatch(val blueprint: Blueprint, val ambiguous: Boolean)
+
+    private val byDisplay: Map<String, List<Blueprint>> = catalog.groupBy { normalize(it.displayName) }
+    private val byNameAll: Map<String, List<Blueprint>> = catalog.groupBy { normalize(it.name) }
+    private val byNumber: Map<Int, List<Blueprint>> =
+        catalog.groupBy { numeratorOf(it.number) }.filterKeys { it >= 0 }
+
     private val byName: Map<String, List<Blueprint>> =
         catalog.groupBy { normalize(it.name) }.filterKeys { it.length >= 4 }
     private val names = byName.keys.toList()
@@ -65,6 +85,57 @@ class CardIndex(catalog: List<Blueprint>) {
             candidates.firstOrNull { it.number.substringBefore('/').trimStart('0') == printed }?.let { return it }
         }
         return candidates.firstOrNull { it.version.isBlank() } ?: candidates[0]
+    }
+
+    /**
+     * Busca por el número impreso en la carta (p. ej. 296/298), que no depende del idioma.
+     * Solo devuelve una carta si el número identifica una única entrada del catálogo.
+     */
+    fun findByNumber(text: String): Blueprint? {
+        val lower = text.lowercase()
+        for (m in PRINTED_RE.findAll(text)) {
+            val num = m.groupValues[1].toIntOrNull() ?: continue
+            val den = m.groupValues[2].toIntOrNull() ?: continue
+            if (num < 1 || den < 20) continue
+            var c = byNumber[num] ?: continue
+            if (c.any { denominatorOf(it.number) > 0 }) {
+                c = c.filter { denominatorOf(it.number) == den }
+                if (c.isEmpty()) continue
+            }
+            if (c.size > 1) {
+                val withCode = c.filter {
+                    val p = prefixOf(it.number)
+                    p.isNotEmpty() && Regex("\\b$p\\b").containsMatchIn(lower)
+                }
+                if (withCode.isNotEmpty()) c = withCode
+            }
+            if (c.size > 1) {
+                val base = c.filter { it.version.isBlank() }
+                if (base.isNotEmpty()) c = base
+            }
+            if (c.size == 1) return c[0]
+        }
+        return null
+    }
+
+    /** Para importar: "Nombre (Versión)" o "Nombre" tal como se exporta; admite pequeñas erratas. */
+    fun findByLabel(label: String): LabelMatch? {
+        val q = normalize(label)
+        if (q.isEmpty()) return null
+        byDisplay[q]?.let { return LabelMatch(pick(it), it.size > 1) }
+        byNameAll[q]?.let { return LabelMatch(pick(it), it.size > 1) }
+        var best: List<Blueprint>? = null
+        var bestScore = 0.0
+        for ((key, list) in byDisplay) {
+            if (abs(key.length - q.length) > max(3, q.length / 4)) continue
+            val s = similarity(q, key)
+            if (s > bestScore) {
+                bestScore = s
+                best = list
+            }
+        }
+        val b = best
+        return if (b != null && bestScore >= 0.9) LabelMatch(pick(b), b.size > 1) else null
     }
 
     fun search(query: String): List<Blueprint> {
